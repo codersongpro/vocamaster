@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voca Master</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+      body {
+        font-family: 'Inter', sans-serif;
+        background-color: #f3f4f6;
+      }
+      @media print {
+        body {
+          background-color: white;
+        }
+        .no-print {
+          display: none !important;
+        }
+        /* Ensure the worksheet is visible and positioned correctly when printing */
+        #hidden-worksheet {
+            position: static !important;
+            display: block !important;
+            left: auto !important;
+            top: auto !important;
+        }
+        @page {
+          margin: 0; /* Let the HTML padding handle margins */
+          size: auto;
+        }
+      }
+    </style>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
+
