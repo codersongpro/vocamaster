@@ -1,12 +1,23 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { extractVocabularyFromFiles, generateSpeechForWord } from './services/geminiService';
 import { playPCMData } from './services/audioUtils';
+import { compressImageFile } from './services/imageUtils';
 import { VocabItem, ProcessingStatus, FilePart } from './types';
 import LoadingOverlay from './components/LoadingOverlay';
 import WorksheetPreview from './components/WorksheetPreview';
 import PasswordAuth from './components/PasswordAuth';
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
+
+// 압축 후 전송 용량 한도 (서버 api/_validation.js의 base64 한도에 맞춘 값)
+// base64 인코딩 시 용량이 약 1.33배가 되므로 원본 바이트 기준으로 환산했습니다.
+const MAX_UPLOAD_FILE_BYTES = 2_000_000;
+const MAX_UPLOAD_TOTAL_BYTES = 3_000_000;
+// 압축 전 방어선 (브라우저 메모리 보호)
+const MAX_ORIGINAL_TOTAL_BYTES = 60_000_000;
+
+// 사용자에게 그대로 안내해도 되는 업로드 검증 오류
+class UploadError extends Error {}
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -44,8 +55,8 @@ const App: React.FC = () => {
         reject(new Error('지원하지 않는 파일 형식입니다.'));
         return;
       }
-      if (file.size > 2_000_000) {
-        reject(new Error('파일 크기가 너무 큽니다. 파일 하나당 2MB 이하만 업로드할 수 있습니다.'));
+      if (file.size > MAX_UPLOAD_FILE_BYTES) {
+        reject(new UploadError('파일 하나의 용량이 너무 큽니다. 해상도가 낮은 사진으로 다시 시도해주세요.'));
         return;
       }
       const reader = new FileReader();
@@ -82,17 +93,24 @@ const App: React.FC = () => {
       return;
     }
     const selectedFiles = Array.from(files) as File[];
-    const totalSize = selectedFiles.reduce((sum, file) => sum + file.size, 0);
-    if (totalSize > 3_000_000) {
-      alert('전체 파일 크기는 3MB 이하로 업로드해주세요.');
-      return;
-    }
 
     setStatus('analyzing');
-    
+
     try {
-      // 파일 목록을 배열로 변환하고 병렬로 Base64 인코딩을 수행합니다.
-      const filePromises = selectedFiles.map((file) => readFileAsBase64(file));
+      const originalTotalSize = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+      if (originalTotalSize > MAX_ORIGINAL_TOTAL_BYTES) {
+        throw new UploadError('전체 파일 크기는 60MB 이하로 업로드해주세요.');
+      }
+
+      // 이미지를 업로드 전에 축소·재압축하여 전송 용량을 줄입니다. (PDF 등은 원본을 유지합니다)
+      const preparedFiles = await Promise.all(selectedFiles.map((file) => compressImageFile(file)));
+      const totalSize = preparedFiles.reduce((sum, file) => sum + file.size, 0);
+      if (totalSize > MAX_UPLOAD_TOTAL_BYTES) {
+        throw new UploadError('용량을 줄인 뒤에도 전체 크기가 너무 큽니다. 파일 수를 줄여 다시 시도해주세요.');
+      }
+
+      // 준비된 파일을 병렬로 Base64 인코딩합니다.
+      const filePromises = preparedFiles.map((file) => readFileAsBase64(file));
       const fileParts = await Promise.all(filePromises);
 
       // Gemini AI를 호출하여 단어와 뜻을 추출합니다.
@@ -106,7 +124,9 @@ const App: React.FC = () => {
       setStatus('idle');
     } catch (error) {
       setStatus('error');
-      alert("파일 분석에 실패했습니다. 파일 형식과 크기를 확인한 뒤 다시 시도해주세요.");
+      alert(error instanceof UploadError
+        ? error.message
+        : "파일 분석에 실패했습니다. 파일 형식과 크기를 확인한 뒤 다시 시도해주세요.");
     } finally {
       // 파일 인풋 초기화 (동일한 파일을 다시 올릴 수 있도록 처리)
       if (fileInputRef.current) {
@@ -257,7 +277,7 @@ const App: React.FC = () => {
                     <h2 className="text-2xl font-bold text-gray-800 mb-4">단어장 사진 또는 PDF를 올려주세요</h2>
                     <p className="text-gray-500 mb-8 max-w-md mx-auto">
                         영어 단어와 뜻이 적힌 파일(이미지, PDF)을 업로드하면,<br/> AI가 자동으로 학습지와 정답지를 만들어드립니다.<br/>
-                        <span className="text-sm text-blue-500 mt-2 block">(여러 장을 한 번에 올릴 수 있습니다)</span>
+                        <span className="text-sm text-blue-500 mt-2 block">(최대 5장까지 한 번에 올릴 수 있고, 사진 용량은 자동으로 줄여 전송합니다)</span>
                     </p>
                     
                     <input 
