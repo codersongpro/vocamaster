@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { VocabItem } from '../types';
 
 interface WorksheetPreviewProps {
@@ -7,121 +7,129 @@ interface WorksheetPreviewProps {
 }
 
 /*
-  A4 가로 기준 지면 계산 (페이지 높이는 209mm로 잡아 인쇄 오차 1mm를 흡수합니다)
-  - 페이지 상하 패딩 12mm × 2        = 24mm
-  - 제목 헤더 18mm + 아래 여백 3mm   = 21mm
-  - 표 머리글                        =  9mm
-  - 본문에 남는 높이 209-24-21-9     = 155mm  → 이 안에 들어가도록 행 수를 정합니다.
-
-  답안지는 한글 해석이 한 줄 더 들어가므로 행을 더 높게 잡고 장당 단어 수를 줄입니다.
-  번호는 전체 목록 기준이라 문제지와 답안지의 장수가 달라도 서로 대응됩니다.
+  A4 가로(297mm × 210mm) 인쇄 기준
+  - 페이지 높이는 209mm로 잡아 브라우저 인쇄 시 1mm 반올림 오차를 흡수합니다.
+  - 한 장에 최대 30단어(2열 × 15행)를 담고, 넘치면 다음 장으로 넘깁니다.
+    20단어짜리 시험지는 문제지 1장 + 답안지 1장, 총 2장으로 나옵니다.
+  - 내용을 자르지 않고, 표가 지면보다 길면 글자 크기를 자동으로 줄여 맞춥니다.
 */
-const LAYOUT = {
-  // 12행 × 12mm = 144mm
-  test: { rowsPerColumn: 12, rowHeight: '12mm', cellMaxHeight: '9mm' },
-  // 9행 × 16mm = 144mm
-  answer: { rowsPerColumn: 9, rowHeight: '16mm', cellMaxHeight: '13mm' },
-} as const;
+const ITEMS_PER_PAGE = 30;
+const BASE_FONT_PX = 11;
+const MIN_FONT_PX = 5;
 
-const itemsPerPage = (isAnswerKey: boolean) =>
-  (isAnswerKey ? LAYOUT.answer.rowsPerColumn : LAYOUT.test.rowsPerColumn) * 2;
-
-// 한글은 영문자의 약 2배 폭을 차지하므로 가중치를 두어 글자 수를 셉니다.
-const visualLength = (text: string) =>
-  [...text].reduce((sum, char) => sum + (/[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(char) ? 2 : 1), 0);
-
-// 뜻이 길어도 셀 안에서 잘리지 않도록 글자 크기를 단계적으로 줄입니다.
-const fontSizeFor = (item: { definition: string; koreanDefinition: string }, isAnswerKey: boolean) => {
-  const length = visualLength(item.definition) + (isAnswerKey ? visualLength(item.koreanDefinition) : 0);
-  if (length <= 70) return '11px';
-  if (length <= 110) return '9.5px';
-  return '8px';
-};
-
-// 페이지 단위로 단어를 잘라 담습니다.
-const paginate = (items: VocabItem[], perPage: number): VocabItem[][] => {
+const paginate = (items: VocabItem[]): VocabItem[][] => {
   const pages: VocabItem[][] = [];
-  for (let i = 0; i < items.length; i += perPage) {
-    pages.push(items.slice(i, i + perPage));
+  for (let i = 0; i < items.length; i += ITEMS_PER_PAGE) {
+    pages.push(items.slice(i, i + ITEMS_PER_PAGE));
   }
   return pages;
 };
 
-const WorksheetPreview: React.FC<WorksheetPreviewProps> = ({ items, date }) => {
-  const testPages = paginate(items, itemsPerPage(false));
-  const answerPages = paginate(items, itemsPerPage(true));
+/*
+  표 영역이 남은 지면보다 길면 글자 크기를 줄여 한 장에 들어가게 맞춥니다.
+  내부 여백과 답 쓰는 칸을 em 단위로 잡아 두었기 때문에
+  글자 크기만 줄이면 표 전체가 같은 비율로 작아집니다.
+*/
+const FitToPage: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [fontSize, setFontSize] = useState(BASE_FONT_PX);
 
-  const renderTable = (data: VocabItem[], startIndex: number, isAnswerKey: boolean) => {
-    const layout = isAnswerKey ? LAYOUT.answer : LAYOUT.test;
-    return (
-    <table className="w-full border-collapse text-[11px] table-fixed">
+  useLayoutEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    const available = element.clientHeight;
+    const needed = element.scrollHeight;
+    // 아직 넘친다면 넘치는 비율만큼 글자를 줄입니다. 맞으면 더 이상 갱신하지 않아 재계산이 멈춥니다.
+    if (needed > available && fontSize > MIN_FONT_PX) {
+      const next = Math.max(MIN_FONT_PX, fontSize * (available / needed) * 0.98);
+      if (next < fontSize - 0.05) setFontSize(next);
+    }
+  });
+
+  return (
+    <div ref={containerRef} className="flex-1 min-h-0 overflow-hidden" style={{ fontSize: `${fontSize}px` }}>
+      {children}
+    </div>
+  );
+};
+
+const WorksheetPreview: React.FC<WorksheetPreviewProps> = ({ items, date }) => {
+  const pages = paginate(items);
+
+  /*
+    fillPage 가 true 면 표가 남은 지면을 채우도록 늘어납니다.
+    (행 간격이 벌어져 답 쓰는 칸이 넓어집니다)
+  */
+  const renderTable = (data: VocabItem[], startIndex: number, isAnswerKey: boolean, fillPage: boolean) => (
+    <table className={`w-full border-collapse table-fixed ${fillPage ? 'h-full' : ''}`}>
       <thead>
-        <tr
-          className={`border-b-2 ${isAnswerKey ? 'border-red-300 bg-red-50' : 'border-gray-800'}`}
-          style={{ height: '9mm' }}
-        >
-          <th className={`py-1 px-2 text-left w-[10%] font-bold ${isAnswerKey ? 'text-red-800' : 'text-black'}`}>No.</th>
-          <th className={`py-1 px-2 text-left w-[60%] font-bold ${isAnswerKey ? 'text-red-800' : 'text-black'}`}>
+        <tr className={`border-b-2 ${isAnswerKey ? 'border-red-300 bg-red-50' : 'border-gray-800'}`}>
+          <th
+            className={`text-left w-[10%] font-bold ${isAnswerKey ? 'text-red-800' : 'text-black'}`}
+            style={{ padding: '0.35em 0.5em' }}
+          >
+            No.
+          </th>
+          <th
+            className={`text-left w-[60%] font-bold ${isAnswerKey ? 'text-red-800' : 'text-black'}`}
+            style={{ padding: '0.35em 0.5em' }}
+          >
             {isAnswerKey ? 'English Definition / 한글 뜻' : 'English Definition'}
           </th>
-          <th className={`py-1 px-2 text-left w-[30%] font-bold ${isAnswerKey ? 'text-red-800' : 'text-black'}`}>
+          <th
+            className={`text-left w-[30%] font-bold ${isAnswerKey ? 'text-red-800' : 'text-black'}`}
+            style={{ padding: '0.35em 0.5em' }}
+          >
             {isAnswerKey ? 'Answer' : 'Word'}
           </th>
         </tr>
       </thead>
       <tbody>
         {data.map((item, index) => (
-          <tr
-            key={item.id}
-            className={`border-b ${isAnswerKey ? 'border-red-100' : 'border-gray-300'}`}
-            style={{ height: layout.rowHeight }}
-          >
-            <td className={`py-1 px-2 align-middle ${isAnswerKey ? 'text-red-400' : 'text-gray-500'}`}>
+          <tr key={item.id} className={`border-b ${isAnswerKey ? 'border-red-100' : 'border-gray-300'}`}>
+            <td
+              className={`align-middle ${isAnswerKey ? 'text-red-400' : 'text-gray-500'}`}
+              style={{ padding: '0.35em 0.5em' }}
+            >
               {startIndex + index + 1}
             </td>
-            {/*
-              행 높이를 mm로 고정하고 셀 내부를 overflow-hidden으로 막아
-              내용이 길어져도 페이지 아래쪽이 밀려 잘리는 일이 없게 합니다.
-            */}
-            <td className="py-1 px-2 align-middle text-gray-900">
-              <div
-                className="overflow-hidden leading-tight"
-                style={{ maxHeight: layout.cellMaxHeight, fontSize: fontSizeFor(item, isAnswerKey) }}
-              >
-                <div className="font-medium break-words">{item.definition}</div>
-                {/* 한글 해석은 답안지에만 노출합니다. */}
-                {isAnswerKey && (
-                  <div className="text-blue-700 break-words">{item.koreanDefinition}</div>
-                )}
-              </div>
+            {/* 내용을 자르지 않고 그대로 보여줍니다. 길면 FitToPage 가 글자 크기를 줄입니다. */}
+            <td className="align-middle text-gray-900 leading-snug" style={{ padding: '0.35em 0.5em' }}>
+              <div className="font-medium break-words">{item.definition}</div>
+              {/* 한글 해석은 답안지에만 노출합니다. */}
+              {isAnswerKey && <div className="text-blue-700 break-words">{item.koreanDefinition}</div>}
             </td>
-            <td className={`py-1 px-2 align-middle ${isAnswerKey ? 'font-bold text-gray-900 break-words' : ''}`}>
-              {isAnswerKey ? item.word : <div className="border-b border-gray-500 w-full" style={{ height: '7mm' }} />}
+            <td
+              className={`align-middle ${isAnswerKey ? 'font-bold text-gray-900 break-words' : ''}`}
+              style={{ padding: '0.35em 0.5em' }}
+            >
+              {isAnswerKey ? (
+                item.word
+              ) : (
+                // 답을 쓰는 칸. em 단위라 글자 크기가 줄면 칸도 같은 비율로 줄어듭니다.
+                <div className="border-b border-gray-500 w-full" style={{ height: '2.2em' }} />
+              )}
             </td>
           </tr>
         ))}
       </tbody>
     </table>
-    );
-  };
+  );
 
   // 한 장(문제지 또는 답안지)을 그립니다.
-  const renderPage = (
-    pageItems: VocabItem[],
-    pageIndex: number,
-    totalPages: number,
-    isAnswerKey: boolean,
-    isLastPage: boolean
-  ) => {
-    const startIndex = pageIndex * itemsPerPage(isAnswerKey);
+  const renderPage = (pageItems: VocabItem[], pageIndex: number, isAnswerKey: boolean, isLastPage: boolean) => {
+    const startIndex = pageIndex * ITEMS_PER_PAGE;
     const midPoint = Math.ceil(pageItems.length / 2);
     const leftItems = pageItems.slice(0, midPoint);
     const rightItems = pageItems.slice(midPoint);
     const pageId = isAnswerKey ? `page-answer-${pageIndex}` : `page-test-${pageIndex}`;
+    /*
+      단어가 어느 정도 차 있는 장은 표를 늘려 지면을 채웁니다.
+      항목이 몇 개뿐인 마지막 장까지 늘리면 행 하나가 지나치게 커지므로 제외합니다.
+    */
+    const fillPage = pageItems.length >= ITEMS_PER_PAGE / 2;
 
     return (
-      // 높이를 209mm(A4 가로 210mm보다 1mm 작게)로 두어 브라우저 인쇄 시
-      // 소수점 반올림으로 페이지가 넘어가며 아래쪽이 잘리는 것을 막습니다.
       <div
         key={pageId}
         id={pageId}
@@ -130,10 +138,7 @@ const WorksheetPreview: React.FC<WorksheetPreviewProps> = ({ items, date }) => {
         // 마지막 장 뒤에는 강제 개행을 넣지 않아 빈 페이지가 인쇄되지 않게 합니다.
         style={isLastPage ? undefined : { breakAfter: 'page', pageBreakAfter: 'always' }}
       >
-        <div
-          className="border-b-2 border-black pb-2 mb-3 flex justify-between items-end shrink-0"
-          style={{ height: '18mm' }}
-        >
+        <div className="border-b-2 border-black pb-2 mb-3 flex justify-between items-end shrink-0">
           <div>
             <h1 className={`text-xl font-bold mb-0.5 ${isAnswerKey ? 'text-red-600' : 'text-black'}`}>
               {isAnswerKey ? '정답지 (Answer Key)' : '나만의 단어 테스트'}
@@ -144,25 +149,31 @@ const WorksheetPreview: React.FC<WorksheetPreviewProps> = ({ items, date }) => {
             <p className="text-xs font-medium text-black">Date: {date}</p>
             {!isAnswerKey && <p className="text-xs font-medium text-black">Score: _____ / {items.length}</p>}
             <p className="text-[10px] text-gray-500">
-              Page {pageIndex + 1} / {totalPages}
+              Page {pageIndex + 1} / {pages.length}
             </p>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-10">
-          <div>{renderTable(leftItems, startIndex, isAnswerKey)}</div>
-          <div>{rightItems.length > 0 ? renderTable(rightItems, startIndex + midPoint, isAnswerKey) : null}</div>
-        </div>
+        <FitToPage>
+          <div className={`grid grid-cols-2 gap-10 ${fillPage ? 'h-full' : 'items-start'}`}>
+            <div className={fillPage ? 'h-full' : ''}>
+              {renderTable(leftItems, startIndex, isAnswerKey, fillPage)}
+            </div>
+            <div className={fillPage ? 'h-full' : ''}>
+              {rightItems.length > 0
+                ? renderTable(rightItems, startIndex + midPoint, isAnswerKey, fillPage)
+                : null}
+            </div>
+          </div>
+        </FitToPage>
       </div>
     );
   };
 
   return (
     <div className="w-[297mm] bg-white text-black">
-      {testPages.map((pageItems, index) => renderPage(pageItems, index, testPages.length, false, false))}
-      {answerPages.map((pageItems, index) =>
-        renderPage(pageItems, index, answerPages.length, true, index === answerPages.length - 1)
-      )}
+      {pages.map((pageItems, index) => renderPage(pageItems, index, false, false))}
+      {pages.map((pageItems, index) => renderPage(pageItems, index, true, index === pages.length - 1))}
     </div>
   );
 };
