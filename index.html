@@ -12,8 +12,10 @@
         background-color: #f3f4f6;
       }
       @media print {
-        body {
+        html, body {
           background-color: white;
+          margin: 0 !important;
+          padding: 0 !important;
         }
         .no-print {
           display: none !important;
@@ -25,9 +27,20 @@
             left: auto !important;
             top: auto !important;
         }
+        /* 파란색 한글 해석 등 색상이 인쇄에서 그대로 나오도록 합니다. */
+        #hidden-worksheet * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+        /* 표가 브라우저에 의해 임의로 잘려 다음 장으로 넘어가지 않게 합니다. */
+        #hidden-worksheet table,
+        #hidden-worksheet tr {
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
         @page {
           margin: 0; /* Let the HTML padding handle margins */
-          size: auto;
+          size: 297mm 210mm; /* A4 가로 고정 */
         }
       }
     </style>

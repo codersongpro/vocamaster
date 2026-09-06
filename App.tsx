@@ -2,10 +2,13 @@ import React, { useEffect, useState, useRef } from 'react';
 import { extractVocabularyFromFiles, generateSpeechForWord } from './services/geminiService';
 import { playPCMData } from './services/audioUtils';
 import { compressImageFile } from './services/imageUtils';
-import { VocabItem, ProcessingStatus, FilePart } from './types';
+import { VocabItem, ProcessingStatus, FilePart, QuizRecord } from './types';
+import { loadQuizHistory, clearQuizHistory } from './services/quizStorage';
 import LoadingOverlay from './components/LoadingOverlay';
 import WorksheetPreview from './components/WorksheetPreview';
 import PasswordAuth from './components/PasswordAuth';
+import OnlineQuiz from './components/OnlineQuiz';
+import QuizHistory from './components/QuizHistory';
 import html2canvas from "html2canvas";
 import { jsPDF } from "jspdf";
 
@@ -23,8 +26,8 @@ const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
-  // 단계 상태: upload (업로드) -> verify (검증 및 수정) -> preview (미리보기)
-  const [step, setStep] = useState<'upload' | 'verify' | 'preview'>('upload');
+  // 단계 상태: upload (업로드) -> verify (검증 및 수정) -> quiz (온라인 테스트) / history (기록)
+  const [step, setStep] = useState<'upload' | 'verify' | 'quiz' | 'history'>('upload');
   // 처리 상태: idle | analyzing | generating_audio | error
   const [status, setStatus] = useState<ProcessingStatus>('idle');
   // 추출된 단어 목록
@@ -33,7 +36,11 @@ const App: React.FC = () => {
   const [audioCache, setAudioCache] = useState<Record<string, string>>({});
   // 현재 음성 재생 중인 단어 아이디
   const [playingId, setPlayingId] = useState<string | null>(null);
-  
+  // 온라인 테스트에 출제할 단어 세트 (기록에서 재응시하면 그 세트로 바뀝니다)
+  const [quizItems, setQuizItems] = useState<VocabItem[]>([]);
+  // 브라우저에 저장된 테스트 기록
+  const [quizHistory, setQuizHistory] = useState<QuizRecord[]>([]);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -41,6 +48,11 @@ const App: React.FC = () => {
       .then((response) => setIsAuthenticated(response.ok))
       .catch(() => setIsAuthenticated(false))
       .finally(() => setIsCheckingAuth(false));
+  }, []);
+
+  // 저장된 테스트 기록을 처음 한 번 불러옵니다.
+  useEffect(() => {
+    setQuizHistory(loadQuizHistory());
   }, []);
 
   const handleLockScreen = async () => {
@@ -159,43 +171,39 @@ const App: React.FC = () => {
     }
   };
 
-  // PDF 다운로드 처리 함수
+  // PDF 다운로드 처리 함수 (문제지·답안지가 여러 장으로 나뉘어도 모두 담습니다)
   const handleDownloadPDF = async () => {
-    const testElement = document.getElementById('page-test');
-    const answerElement = document.getElementById('page-answer');
-    
-    if (!testElement || !answerElement) {
+    // 문제지 전체 → 답안지 전체 순서로 렌더링된 페이지 요소를 그대로 가져옵니다.
+    const pageElements = Array.from(
+      document.querySelectorAll<HTMLElement>('#hidden-worksheet [data-worksheet-page]')
+    );
+
+    if (pageElements.length === 0) {
         alert("PDF 생성 요소를 찾는 중입니다...");
         return;
     }
 
     try {
         setStatus('generating_audio'); // PDF 생성 스피너 표시
-        
+
         // A4 가로 모드(Landscape, 'l')로 jsPDF 인스턴스 생성
         const pdf = new jsPDF('l', 'mm', 'a4');
         const pdfWidth = pdf.internal.pageSize.getWidth(); // 297mm
         const pdfHeight = pdf.internal.pageSize.getHeight(); // 210mm
 
-        const captureOptions = {
-          scale: 2, // 고해상도 캡처
-          logging: false,
-          useCORS: true,
-          width: testElement.offsetWidth,
-          height: testElement.offsetHeight,
-          backgroundColor: '#ffffff', // 배경색 흰색 보장
-        };
-
-        // 1. 문제지 페이지 캡처 및 PDF 추가
-        const canvasTest = await html2canvas(testElement, captureOptions);
-        const imgDataTest = canvasTest.toDataURL('image/jpeg', 0.75);
-        pdf.addImage(imgDataTest, 'JPEG', 0, 0, pdfWidth, pdfHeight);
-
-        // 2. 정답지 페이지 캡처 및 PDF 추가
-        pdf.addPage();
-        const canvasAnswer = await html2canvas(answerElement, captureOptions);
-        const imgDataAnswer = canvasAnswer.toDataURL('image/jpeg', 0.75);
-        pdf.addImage(imgDataAnswer, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+        for (let i = 0; i < pageElements.length; i++) {
+            const element = pageElements[i];
+            const canvas = await html2canvas(element, {
+              scale: 2, // 고해상도 캡처
+              logging: false,
+              useCORS: true,
+              width: element.offsetWidth,
+              height: element.offsetHeight,
+              backgroundColor: '#ffffff', // 배경색 흰색 보장
+            });
+            if (i > 0) pdf.addPage();
+            pdf.addImage(canvas.toDataURL('image/jpeg', 0.75), 'JPEG', 0, 0, pdfWidth, pdfHeight);
+        }
 
         // PDF 파일 저장
         pdf.save(`voca-master-${new Date().toISOString().split('T')[0]}.pdf`);
@@ -207,11 +215,25 @@ const App: React.FC = () => {
     }
   };
 
-  // 처음으로 돌아가기(초기화)
+  // 온라인 테스트 시작 (현재 단어 목록 또는 기록에 저장된 세트로)
+  const handleStartQuiz = (items: VocabItem[]) => {
+    if (items.length === 0) return;
+    setQuizItems(items);
+    setStep('quiz');
+  };
+
+  // 테스트 기록 삭제
+  const handleClearHistory = () => {
+    clearQuizHistory();
+    setQuizHistory([]);
+  };
+
+  // 처음으로 돌아가기(초기화) — 저장된 테스트 기록은 유지합니다.
   const handleReset = () => {
     setStep('upload');
     setVocabList([]);
     setAudioCache({});
+    setQuizItems([]);
   };
 
   if (isCheckingAuth) {
@@ -252,6 +274,14 @@ const App: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-4">
+                  {step !== 'history' && (
+                       <button
+                          onClick={() => { setQuizHistory(loadQuizHistory()); setStep('history'); }}
+                          className="text-sm text-gray-500 hover:text-gray-800 underline transition-colors"
+                       >
+                          테스트 기록
+                       </button>
+                  )}
                   {step !== 'upload' && (
                        <button onClick={handleReset} className="text-sm text-gray-500 hover:text-gray-800 underline transition-colors">
                           처음으로
@@ -305,7 +335,8 @@ const App: React.FC = () => {
                             <span>✅</span> 데이터 검증 (Data Verification)
                          </h2>
                          <p className="text-sm text-gray-500 mb-6">
-                             AI가 인식한 내용을 <b>무작위로 섞어서</b> 보여줍니다. 인쇄하기 전에 내용이 맞는지 확인하고, 듣기 버튼을 눌러 발음을 확인해보세요.
+                             AI가 인식한 내용을 <b>무작위로 섞어서</b> 보여줍니다. 인쇄하기 전에 내용이 맞는지 확인하고, 듣기 버튼을 눌러 발음을 확인해보세요.<br/>
+                             <span className="text-xs text-gray-400">인쇄물은 <b>문제지에 영어 뜻만</b>, <b>답안지에 한글 해석과 정답</b>이 함께 나옵니다.</span>
                          </p>
 
                          <div className="overflow-x-auto">
@@ -346,14 +377,39 @@ const App: React.FC = () => {
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <button 
+                        <button
                             onClick={handleDownloadPDF}
-                            className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-4 px-6 rounded-xl shadow-lg flex items-center justify-center gap-3 transition-all"
+                            className="bg-red-600 hover:bg-red-700 text-white font-semibold py-4 px-6 rounded-xl shadow-lg flex items-center justify-center gap-3 transition-all"
                         >
                             <span>💾</span> PDF 파일 다운로드
                         </button>
+                        <button
+                            onClick={() => handleStartQuiz(vocabList)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-6 rounded-xl shadow-lg flex items-center justify-center gap-3 transition-all"
+                        >
+                            <span>📝</span> 온라인으로 바로 테스트하기
+                        </button>
                     </div>
                 </div>
+            )}
+
+            {/* 3단계: 온라인 단어 테스트 */}
+            {step === 'quiz' && (
+                <OnlineQuiz
+                    items={quizItems}
+                    onFinished={() => setQuizHistory(loadQuizHistory())}
+                    onExit={() => setStep(vocabList.length > 0 ? 'verify' : 'upload')}
+                />
+            )}
+
+            {/* 테스트 기록 화면 */}
+            {step === 'history' && (
+                <QuizHistory
+                    records={quizHistory}
+                    onRetake={handleStartQuiz}
+                    onClear={handleClearHistory}
+                    onExit={() => setStep(vocabList.length > 0 ? 'verify' : 'upload')}
+                />
             )}
         </div>
     </div>
