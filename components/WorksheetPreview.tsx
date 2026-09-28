@@ -9,13 +9,15 @@ interface WorksheetPreviewProps {
 /*
   A4 가로(297mm × 210mm) 인쇄 기준
   - 페이지 높이는 209mm로 잡아 브라우저 인쇄 시 1mm 반올림 오차를 흡수합니다.
-  - 한 장에 최대 30단어(2열 × 15행)를 담고, 넘치면 다음 장으로 넘깁니다.
+  - 한 장에 최대 20단어(2열 × 10행)를 담고, 넘치면 다음 장으로 넘깁니다.
     20단어짜리 시험지는 문제지 1장 + 답안지 1장, 총 2장으로 나옵니다.
   - 내용을 자르지 않고, 표가 지면보다 길면 글자 크기를 자동으로 줄여 맞춥니다.
+  - 장당 단어 수를 여유 있게 잡아 기본 글자 크기(14px)가 축소 없이 유지되도록 했습니다.
+    축소가 필요한 경우에도 인쇄해서 읽을 수 있는 하한(10px) 아래로는 줄이지 않습니다.
 */
-const ITEMS_PER_PAGE = 30;
-const BASE_FONT_PX = 11;
-const MIN_FONT_PX = 5;
+const ITEMS_PER_PAGE = 20;
+const BASE_FONT_PX = 14;
+const MIN_FONT_PX = 10;
 
 const paginate = (items: VocabItem[]): VocabItem[][] => {
   const pages: VocabItem[][] = [];

@@ -18,6 +18,8 @@ const MAX_UPLOAD_FILE_BYTES = 2_000_000;
 const MAX_UPLOAD_TOTAL_BYTES = 3_000_000;
 // 압축 전 방어선 (브라우저 메모리 보호)
 const MAX_ORIGINAL_TOTAL_BYTES = 60_000_000;
+// 한 번에 분석할 수 있는 파일 수 (서버 api/_validation.js의 MAX_FILES와 같은 값)
+const MAX_FILES = 5;
 
 // 사용자에게 그대로 안내해도 되는 업로드 검증 오류
 class UploadError extends Error {}
@@ -41,7 +43,22 @@ const App: React.FC = () => {
   // 브라우저에 저장된 테스트 기록
   const [quizHistory, setQuizHistory] = useState<QuizRecord[]>([]);
 
+  // 분석을 기다리는 사진·파일 목록 (촬영/선택할 때마다 쌓입니다)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  // 목록에 보여줄 미리보기 URL
+  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+
+  // 대기 목록이 바뀔 때마다 미리보기 URL을 만들고, 교체 시 이전 URL을 해제합니다.
+  useEffect(() => {
+    const urls = pendingFiles.map((file) =>
+      file.type.startsWith('image/') ? URL.createObjectURL(file) : ''
+    );
+    setPreviewUrls(urls);
+    return () => urls.forEach((url) => url && URL.revokeObjectURL(url));
+  }, [pendingFiles]);
 
   useEffect(() => {
     fetch('/api/session', { credentials: 'same-origin' })
@@ -96,15 +113,40 @@ const App: React.FC = () => {
     return newArray;
   };
 
-  // 파일 업로드 처리 함수 (다중 파일 지원)
-  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  /*
+    촬영·선택한 파일을 대기 목록에 추가합니다.
+    모바일 카메라는 한 번에 한 장만 넘겨주므로, 촬영을 반복해 여러 장을 쌓을 수 있도록
+    선택 즉시 분석하지 않고 목록에 모아둡니다.
+  */
+  const handleAddFiles = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
-    if (!files || files.length === 0) return;
-    if (files.length > 5) {
-      alert('파일은 한 번에 5개까지 업로드할 수 있습니다.');
-      return;
+    if (files && files.length > 0) {
+      const incoming = Array.from(files) as File[];
+      setPendingFiles((prev) => {
+        const room = MAX_FILES - prev.length;
+        if (room <= 0) {
+          alert(`파일은 최대 ${MAX_FILES}장까지 담을 수 있습니다.`);
+          return prev;
+        }
+        if (incoming.length > room) {
+          alert(`파일은 최대 ${MAX_FILES}장까지 담을 수 있어 ${room}장만 추가했습니다.`);
+        }
+        return [...prev, ...incoming.slice(0, room)];
+      });
     }
-    const selectedFiles = Array.from(files) as File[];
+    // 같은 파일을 다시 선택하거나 같은 장면을 다시 촬영할 수 있도록 입력값을 비웁니다.
+    event.target.value = '';
+  };
+
+  // 대기 목록에서 한 장을 제거합니다.
+  const handleRemovePendingFile = (index: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // 대기 목록의 파일을 분석하여 단어를 추출합니다.
+  const handleExtractVocabulary = async () => {
+    if (pendingFiles.length === 0) return;
+    const selectedFiles = pendingFiles;
 
     setStatus('analyzing');
 
@@ -134,16 +176,13 @@ const App: React.FC = () => {
       setVocabList(shuffledItems);
       setStep('verify');
       setStatus('idle');
+      // 분석에 성공했으므로 대기 목록을 비웁니다. (실패 시에는 남겨 두어 바로 재시도할 수 있게 합니다)
+      setPendingFiles([]);
     } catch (error) {
       setStatus('error');
       alert(error instanceof UploadError
         ? error.message
         : "파일 분석에 실패했습니다. 파일 형식과 크기를 확인한 뒤 다시 시도해주세요.");
-    } finally {
-      // 파일 인풋 초기화 (동일한 파일을 다시 올릴 수 있도록 처리)
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
     }
   };
 
@@ -300,30 +339,102 @@ const App: React.FC = () => {
 
             {/* 1단계: 파일 업로드 화면 */}
             {step === 'upload' && (
-                <div className="bg-white rounded-2xl shadow-xl p-12 text-center border-2 border-dashed border-gray-300 hover:border-blue-500 transition-colors">
-                    <div className="mb-6">
-                        <span className="text-6xl">📚</span>
+                <div className="bg-white rounded-2xl shadow-xl p-6 sm:p-10 border border-gray-200">
+                    <div className="text-center">
+                        <span className="text-5xl">📚</span>
+                        <h2 className="text-xl sm:text-2xl font-bold text-gray-800 mt-4 mb-2">단어장 사진 또는 PDF를 올려주세요</h2>
+                        <p className="text-sm text-gray-500 max-w-md mx-auto">
+                            여러 장을 찍어서 모을 수 있습니다. 촬영을 반복해 원하는 만큼 담은 뒤 아래 버튼으로 한 번에 분석하세요.
+                            <span className="block text-xs text-blue-500 mt-1">최대 {MAX_FILES}장 · 사진 용량은 자동으로 줄여 전송합니다</span>
+                        </p>
                     </div>
-                    <h2 className="text-2xl font-bold text-gray-800 mb-4">단어장 사진 또는 PDF를 올려주세요</h2>
-                    <p className="text-gray-500 mb-8 max-w-md mx-auto">
-                        영어 단어와 뜻이 적힌 파일(이미지, PDF)을 업로드하면,<br/> AI가 자동으로 학습지와 정답지를 만들어드립니다.<br/>
-                        <span className="text-sm text-blue-500 mt-2 block">(최대 5장까지 한 번에 올릴 수 있고, 사진 용량은 자동으로 줄여 전송합니다)</span>
-                    </p>
-                    
-                    <input 
-                        type="file" 
-                        accept="image/*, application/pdf" 
-                        multiple 
-                        ref={fileInputRef}
-                        onChange={handleFileChange}
-                        className="hidden" 
+
+                    {/* 카메라 촬영 전용 입력 (모바일에서 카메라가 바로 열립니다) */}
+                    <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        ref={cameraInputRef}
+                        onChange={handleAddFiles}
+                        className="hidden"
                     />
-                    <button 
-                        onClick={() => fileInputRef.current?.click()}
-                        className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-8 rounded-full shadow-lg transition-transform transform hover:scale-105"
-                    >
-                        파일 선택하기 (Select Files)
-                    </button>
+                    {/* 갤러리·파일 선택 입력 */}
+                    <input
+                        type="file"
+                        accept="image/*, application/pdf"
+                        multiple
+                        ref={fileInputRef}
+                        onChange={handleAddFiles}
+                        className="hidden"
+                    />
+
+                    <div className="flex flex-col sm:flex-row gap-3 justify-center mt-8">
+                        <button
+                            onClick={() => cameraInputRef.current?.click()}
+                            disabled={pendingFiles.length >= MAX_FILES}
+                            className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3.5 px-6 rounded-xl shadow-sm transition-colors"
+                        >
+                            <span className="text-lg">📷</span>
+                            {pendingFiles.length > 0 ? '사진 더 찍기' : '사진 찍기'}
+                        </button>
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={pendingFiles.length >= MAX_FILES}
+                            className="flex items-center justify-center gap-2 bg-white hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed text-gray-700 font-semibold py-3.5 px-6 rounded-xl border border-gray-300 transition-colors"
+                        >
+                            <span className="text-lg">🖼️</span>
+                            앨범·파일에서 선택
+                        </button>
+                    </div>
+
+                    {/* 담아둔 사진 목록 */}
+                    {pendingFiles.length > 0 && (
+                        <div className="mt-8 border-t border-gray-100 pt-6">
+                            <div className="flex items-center justify-between mb-3">
+                                <p className="text-sm font-semibold text-gray-700">
+                                    담은 파일 <span className="text-blue-600">{pendingFiles.length}</span> / {MAX_FILES}장
+                                </p>
+                                <button
+                                    onClick={() => setPendingFiles([])}
+                                    className="text-xs text-gray-500 hover:text-red-600 underline transition-colors"
+                                >
+                                    전체 비우기
+                                </button>
+                            </div>
+
+                            <ul className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+                                {pendingFiles.map((file, index) => (
+                                    <li key={`${file.name}-${index}`} className="relative group">
+                                        <div className="aspect-square rounded-lg overflow-hidden bg-gray-100 border border-gray-200 flex items-center justify-center">
+                                            {previewUrls[index] ? (
+                                                <img src={previewUrls[index]} alt={`${index + 1}번째 사진`} className="w-full h-full object-cover" />
+                                            ) : (
+                                                <span className="text-3xl">📄</span>
+                                            )}
+                                        </div>
+                                        <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center">
+                                            {index + 1}
+                                        </span>
+                                        <button
+                                            onClick={() => handleRemovePendingFile(index)}
+                                            className="absolute -top-1.5 -right-1.5 bg-white text-gray-500 hover:text-red-600 hover:border-red-300 border border-gray-300 rounded-full w-6 h-6 flex items-center justify-center shadow-sm transition-colors"
+                                            title={`${index + 1}번째 파일 삭제`}
+                                            aria-label={`${index + 1}번째 파일 삭제`}
+                                        >
+                                            ✕
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+
+                            <button
+                                onClick={handleExtractVocabulary}
+                                className="w-full mt-6 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 rounded-xl shadow-sm transition-colors"
+                            >
+                                담은 {pendingFiles.length}장으로 단어 추출하기
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 
