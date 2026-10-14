@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { QuizAnswer, QuizRecord, VocabItem } from '../types';
 import { saveQuizRecord } from '../services/quizStorage';
+import { maskWord } from '../services/wordMask.js';
 
 interface OnlineQuizProps {
   items: VocabItem[];
@@ -153,8 +154,9 @@ const OnlineQuiz: React.FC<OnlineQuizProps> = ({ items, onFinished, onExit }) =>
         </div>
 
         <p className="text-xs text-gray-400 mb-2">English Definition</p>
+        {/* 영어 뜻 안에 정답 단어가 들어 있으면 빈칸으로 가려서 출제합니다. */}
         <p className="text-xl sm:text-2xl font-semibold text-gray-900 leading-relaxed mb-8 break-words">
-          {current.definition}
+          {maskWord(current.definition, current.word)}
         </p>
 
         <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-3">

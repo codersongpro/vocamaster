@@ -4,6 +4,7 @@ import { playPCMData } from './services/audioUtils';
 import { compressImageFile } from './services/imageUtils';
 import { VocabItem, ProcessingStatus, FilePart, QuizRecord } from './types';
 import { loadQuizHistory, clearQuizHistory } from './services/quizStorage';
+import { maskWord, revealsWord } from './services/wordMask.js';
 import LoadingOverlay from './components/LoadingOverlay';
 import WorksheetPreview from './components/WorksheetPreview';
 import PasswordAuth from './components/PasswordAuth';
@@ -169,6 +170,11 @@ const App: React.FC = () => {
 
       // Gemini AI를 호출하여 단어와 뜻을 추출합니다.
       const items = await extractVocabularyFromFiles(fileParts);
+
+      // 영어 뜻이 보이지 않는 단어는 서버에서 제외하므로 결과가 비어 있을 수 있습니다.
+      if (items.length === 0) {
+        throw new UploadError('문서에서 영어 뜻이 함께 적힌 단어를 찾지 못했습니다. 영어 뜻이 잘 보이게 다시 촬영해주세요.');
+      }
       
       // 추출된 단어들을 무작위로 섞습니다.
       const shuffledItems = shuffleArray(items);
@@ -447,7 +453,8 @@ const App: React.FC = () => {
                          </h2>
                          <p className="text-sm text-gray-500 mb-6">
                              AI가 인식한 내용을 <b>무작위로 섞어서</b> 보여줍니다. 인쇄하기 전에 내용이 맞는지 확인하고, 듣기 버튼을 눌러 발음을 확인해보세요.<br/>
-                             <span className="text-xs text-gray-400">인쇄물은 <b>문제지에 영어 뜻만</b>, <b>답안지에 한글 해석과 정답</b>이 함께 나옵니다.</span>
+                             <span className="text-xs text-gray-400">인쇄물은 <b>문제지에 영어 뜻만</b>, <b>답안지에 한글 해석과 정답</b>이 함께 나옵니다.</span><br/>
+                             <span className="text-xs text-gray-400">영어 뜻에 정답 단어가 들어 있으면 <b>문항에서는 빈칸으로 가려서</b> 출제합니다. 아래 표에는 원문을 그대로 보여줍니다.</span>
                          </p>
 
                          <div className="overflow-x-auto">
@@ -465,7 +472,15 @@ const App: React.FC = () => {
                                          <tr key={item.id} className="hover:bg-gray-50 group">
                                              <td className="p-4 text-gray-400">{index + 1}</td>
                                              <td className="p-4 font-medium text-lg">{item.word}</td>
-                                             <td className="p-4 text-gray-700">{item.definition}</td>
+                                             <td className="p-4 text-gray-700">
+                                                 {item.definition}
+                                                 {/* 문항에서 실제로 보이는 모습을 함께 확인할 수 있게 합니다. */}
+                                                 {revealsWord(item.definition, item.word) && (
+                                                     <span className="block text-xs text-amber-600 mt-1">
+                                                         문항 표시: {maskWord(item.definition, item.word)}
+                                                     </span>
+                                                 )}
+                                             </td>
                                              <td className="p-4">
                                                  <button 
                                                     onClick={() => handlePlayAudio(item)}

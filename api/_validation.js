@@ -35,13 +35,22 @@ export function validateWord(value) {
   return word;
 }
 
+/*
+  영어 뜻은 문서에 인쇄된 문장을 그대로 보관합니다.
+  OCR 과정에서 줄바꿈으로 끊긴 문장을 공백 하나로 잇는 것 외에는 손대지 않습니다.
+  (뜻을 다듬거나 줄이면 시험지의 문항이 원문과 달라집니다)
+*/
+function collapseWhitespace(value) {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
 export function normalizeVocabularyItem(item) {
   if (!item || typeof item.word !== 'string' || typeof item.definition !== 'string' || typeof item.koreanDefinition !== 'string') {
     throw new Error('응답 데이터가 올바르지 않습니다.');
   }
-  const word = item.word.trim();
-  const definition = item.definition.trim();
-  const koreanDefinition = item.koreanDefinition.trim();
+  const word = collapseWhitespace(item.word);
+  const definition = collapseWhitespace(item.definition);
+  const koreanDefinition = collapseWhitespace(item.koreanDefinition);
   if (!word || word.length > 200 || !definition || definition.length > 2_000) {
     throw new Error('응답 데이터 길이가 올바르지 않습니다.');
   }
