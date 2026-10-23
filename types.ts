@@ -25,6 +25,14 @@ export interface QuizAnswer {
   isCorrect: boolean;
 }
 
+// 풀다가 멈춘 온라인 테스트 (브라우저 localStorage에 임시 보관)
+export interface QuizProgress {
+  savedAt: string; // ISO 문자열
+  index: number; // 마지막으로 보고 있던 문항 번호 (0부터)
+  answers: string[]; // 문항 번호와 같은 자리에 적어둔 답
+  questions: VocabItem[]; // 출제된 순서 그대로
+}
+
 // 온라인 테스트 1회분 기록 (브라우저 localStorage에 저장)
 export interface QuizRecord {
   id: string;

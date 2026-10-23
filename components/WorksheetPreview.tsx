@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import { VocabItem } from '../types';
+import { maskWord } from '../services/wordMask.js';
 
 interface WorksheetPreviewProps {
   items: VocabItem[];
@@ -95,9 +96,15 @@ const WorksheetPreview: React.FC<WorksheetPreviewProps> = ({ items, date }) => {
             >
               {startIndex + index + 1}
             </td>
-            {/* 내용을 자르지 않고 그대로 보여줍니다. 길면 FitToPage 가 글자 크기를 줄입니다. */}
+            {/*
+              내용을 자르지 않고 그대로 보여줍니다. 길면 FitToPage 가 글자 크기를 줄입니다.
+              문제지에서는 영어 뜻 안에 들어 있는 정답 단어를 빈칸으로 가립니다.
+              (정답지에는 원문 그대로 실어 채점할 때 뜻을 확인할 수 있게 합니다)
+            */}
             <td className="align-middle text-gray-900 leading-snug" style={{ padding: '0.35em 0.5em' }}>
-              <div className="font-medium break-words">{item.definition}</div>
+              <div className="font-medium break-words">
+                {isAnswerKey ? item.definition : maskWord(item.definition, item.word)}
+              </div>
               {/* 한글 해석은 답안지에만 노출합니다. */}
               {isAnswerKey && <div className="text-blue-700 break-words">{item.koreanDefinition}</div>}
             </td>
