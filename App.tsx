@@ -2,8 +2,9 @@ import React, { useEffect, useState, useRef } from 'react';
 import { extractVocabularyFromFiles, generateSpeechForWord } from './services/geminiService';
 import { playPCMData } from './services/audioUtils';
 import { compressImageFile } from './services/imageUtils';
-import { VocabItem, ProcessingStatus, FilePart, QuizRecord } from './types';
-import { loadQuizHistory, clearQuizHistory } from './services/quizStorage';
+import { VocabItem, ProcessingStatus, FilePart, QuizProgress, QuizRecord } from './types';
+import { clearQuizHistory, clearQuizProgress, loadQuizHistory, loadQuizProgress } from './services/quizStorage';
+import { describeProgress } from './services/quizProgress.js';
 import { maskWord, revealsWord } from './services/wordMask.js';
 import LoadingOverlay from './components/LoadingOverlay';
 import WorksheetPreview from './components/WorksheetPreview';
@@ -43,6 +44,8 @@ const App: React.FC = () => {
   const [quizItems, setQuizItems] = useState<VocabItem[]>([]);
   // 브라우저에 저장된 테스트 기록
   const [quizHistory, setQuizHistory] = useState<QuizRecord[]>([]);
+  // 풀다가 멈춘 테스트 (나갔다 와도 이어서 풀 수 있게 브라우저에 임시 저장해 둔 것)
+  const [savedProgress, setSavedProgress] = useState<QuizProgress | null>(null);
 
   // 분석을 기다리는 사진·파일 목록 (촬영/선택할 때마다 쌓입니다)
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -68,9 +71,10 @@ const App: React.FC = () => {
       .finally(() => setIsCheckingAuth(false));
   }, []);
 
-  // 저장된 테스트 기록을 처음 한 번 불러옵니다.
+  // 저장된 테스트 기록과 풀다가 멈춘 테스트를 처음 한 번 불러옵니다.
   useEffect(() => {
     setQuizHistory(loadQuizHistory());
+    setSavedProgress(loadQuizProgress());
   }, []);
 
   const handleLockScreen = async () => {
@@ -267,18 +271,33 @@ const App: React.FC = () => {
     setStep('quiz');
   };
 
+  // 풀다가 멈춘 테스트를 저장된 문항 순서 그대로 이어서 풉니다.
+  const handleResumeQuiz = () => {
+    if (!savedProgress) return;
+    setQuizItems(savedProgress.questions);
+    setStep('quiz');
+  };
+
+  // 풀던 내용을 버리고 처음부터 시작할 수 있게 합니다.
+  const handleDiscardProgress = () => {
+    if (!window.confirm('풀다가 멈춘 테스트를 지울까요? 적어둔 답은 복구할 수 없습니다.')) return;
+    clearQuizProgress();
+    setSavedProgress(null);
+  };
+
   // 테스트 기록 삭제
   const handleClearHistory = () => {
     clearQuizHistory();
     setQuizHistory([]);
   };
 
-  // 처음으로 돌아가기(초기화) — 저장된 테스트 기록은 유지합니다.
+  // 처음으로 돌아가기(초기화) — 저장된 테스트 기록과 풀던 테스트는 유지합니다.
   const handleReset = () => {
     setStep('upload');
     setVocabList([]);
     setAudioCache({});
     setQuizItems([]);
+    setSavedProgress(loadQuizProgress());
   };
 
   if (isCheckingAuth) {
@@ -342,6 +361,43 @@ const App: React.FC = () => {
                   </button>
                 </div>
             </header>
+
+            {/* 풀다가 멈춘 테스트 이어풀기 안내 */}
+            {savedProgress && (step === 'upload' || step === 'verify') && (
+                <div className="mb-6 bg-amber-50 border border-amber-200 rounded-2xl p-5 flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                        <p className="font-semibold text-amber-900 flex items-center gap-2">
+                            <span>⏸️</span> 풀다가 멈춘 테스트가 있습니다
+                        </p>
+                        <p className="text-sm text-amber-700 mt-1">
+                            {describeProgress(savedProgress).total}문항 중 {describeProgress(savedProgress).position}번째
+                            <span className="mx-1.5">·</span>
+                            답 작성 {describeProgress(savedProgress).answered}개
+                            <span className="mx-1.5">·</span>
+                            {new Date(savedProgress.savedAt).toLocaleString('ko-KR', {
+                                month: '2-digit',
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                            })}
+                        </p>
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                        <button
+                            onClick={handleResumeQuiz}
+                            className="bg-amber-500 hover:bg-amber-600 text-white font-semibold py-2.5 px-5 rounded-xl shadow-sm transition-colors"
+                        >
+                            이어서 풀기
+                        </button>
+                        <button
+                            onClick={handleDiscardProgress}
+                            className="bg-white hover:bg-amber-100 text-amber-700 font-medium py-2.5 px-4 rounded-xl border border-amber-200 transition-colors"
+                        >
+                            지우기
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {/* 1단계: 파일 업로드 화면 */}
             {step === 'upload' && (
@@ -523,8 +579,16 @@ const App: React.FC = () => {
             {step === 'quiz' && (
                 <OnlineQuiz
                     items={quizItems}
-                    onFinished={() => setQuizHistory(loadQuizHistory())}
-                    onExit={() => setStep(vocabList.length > 0 ? 'verify' : 'upload')}
+                    onFinished={() => {
+                        setQuizHistory(loadQuizHistory());
+                        // 제출을 마치면 이어풀기 안내를 내립니다.
+                        setSavedProgress(null);
+                    }}
+                    onExit={() => {
+                        // 중간에 나가면 지금까지 푼 내용이 저장되어 있으므로 안내를 띄웁니다.
+                        setSavedProgress(loadQuizProgress());
+                        setStep(vocabList.length > 0 ? 'verify' : 'upload');
+                    }}
                 />
             )}
 

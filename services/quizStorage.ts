@@ -1,6 +1,8 @@
-import { QuizRecord } from '../types';
+import { QuizProgress, QuizRecord } from '../types';
+import { parseQuizProgress } from './quizProgress.js';
 
 const STORAGE_KEY = 'voca-master:quiz-history:v1';
+const PROGRESS_KEY = 'voca-master:quiz-progress:v1';
 // 브라우저 저장 용량 보호를 위해 최근 기록만 유지합니다.
 const MAX_RECORDS = 20;
 
@@ -38,6 +40,37 @@ export const saveQuizRecord = (record: QuizRecord): QuizRecord[] => {
 export const clearQuizHistory = (): void => {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // 무시
+  }
+};
+
+/*
+  풀다가 멈춘 테스트를 보관합니다. 기록(history)과 달리 한 건만 두고,
+  제출을 마치면 지웁니다.
+*/
+export const loadQuizProgress = (): QuizProgress | null => {
+  try {
+    const raw = window.localStorage.getItem(PROGRESS_KEY);
+    if (!raw) return null;
+    const parsed = parseQuizProgress(JSON.parse(raw));
+    return parsed ? (parsed as unknown as QuizProgress) : null;
+  } catch {
+    return null;
+  }
+};
+
+export const saveQuizProgress = (progress: QuizProgress): void => {
+  try {
+    window.localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
+  } catch {
+    // 저장에 실패해도 지금 풀고 있는 화면은 그대로 진행합니다.
+  }
+};
+
+export const clearQuizProgress = (): void => {
+  try {
+    window.localStorage.removeItem(PROGRESS_KEY);
   } catch {
     // 무시
   }

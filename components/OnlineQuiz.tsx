@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { QuizAnswer, QuizRecord, VocabItem } from '../types';
-import { saveQuizRecord } from '../services/quizStorage';
+import { clearQuizProgress, loadQuizProgress, saveQuizProgress, saveQuizRecord } from '../services/quizStorage';
 import { countBlankAnswers, gradeQuiz } from '../services/quizGrading.js';
+import { matchesItems } from '../services/quizProgress.js';
 import { maskWord } from '../services/wordMask.js';
 
 interface OnlineQuizProps {
@@ -22,23 +23,37 @@ const shuffle = <T,>(array: T[]): T[] => {
 const OnlineQuiz: React.FC<OnlineQuizProps> = ({ items, onFinished, onExit }) => {
   // round가 바뀌면 문제 순서를 새로 섞습니다. (다시 풀기)
   const [round, setRound] = useState(0);
-  const questions = useMemo(() => shuffle(items), [items, round]);
+  /*
+    풀다가 멈춘 테스트가 같은 단어 세트의 것이면 그대로 이어서 풉니다.
+    이때는 문항 순서도 저장된 순서를 그대로 써야 적어둔 답과 짝이 맞습니다.
+  */
+  const [resumed] = useState(() => {
+    const saved = loadQuizProgress();
+    return saved && matchesItems(saved, items) ? saved : null;
+  });
+  const questions = useMemo(
+    () => (round === 0 && resumed ? resumed.questions : shuffle(items)),
+    [items, round, resumed],
+  );
 
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(() => (resumed ? resumed.index : 0));
   /*
     답을 문항 번호 순서대로 보관합니다.
     이전 문항으로 돌아가면 적어둔 답이 그대로 보이고, 고쳐 쓸 수 있습니다.
     채점은 문항을 넘길 때가 아니라 마지막에 제출할 때 한 번에 합니다.
   */
-  const [inputs, setInputs] = useState<string[]>(() => questions.map(() => ''));
+  const [inputs, setInputs] = useState<string[]>(() => (resumed ? resumed.answers : items.map(() => '')));
   const [record, setRecord] = useState<QuizRecord | null>(null);
 
-  // 단어 세트가 바뀌거나 '다시 풀기'로 순서를 새로 섞으면 처음부터 시작합니다.
+  /*
+    풀던 내용을 브라우저에 임시로 저장합니다.
+    '그만하기'로 나가거나 새로고침·앱 종료로 화면이 사라져도 이어서 풀 수 있습니다.
+    제출을 마치면(record가 생기면) 저장본을 지웁니다.
+  */
   useEffect(() => {
-    setInputs(questions.map(() => ''));
-    setIndex(0);
-    setRecord(null);
-  }, [questions]);
+    if (record) return;
+    saveQuizProgress({ savedAt: new Date().toISOString(), index, answers: inputs, questions });
+  }, [questions, index, inputs, record]);
 
   const current = questions[index];
   const isLastQuestion = index + 1 === questions.length;
@@ -73,6 +88,7 @@ const OnlineQuiz: React.FC<OnlineQuizProps> = ({ items, onFinished, onExit }) =>
       items,
     };
     saveQuizRecord(finished);
+    clearQuizProgress();
     setRecord(finished);
     onFinished(finished);
   };
@@ -87,9 +103,12 @@ const OnlineQuiz: React.FC<OnlineQuizProps> = ({ items, onFinished, onExit }) =>
     setIndex(index + 1);
   };
 
-  // 순서를 새로 섞습니다. 나머지 초기화는 questions 변경을 감지하는 위의 useEffect가 맡습니다.
+  // 순서를 새로 섞어 처음부터 다시 풉니다.
   const handleRetry = () => {
     setRound(round + 1);
+    setIndex(0);
+    setInputs(items.map(() => ''));
+    setRecord(null);
   };
 
   // 결과 화면
